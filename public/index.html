@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Class</title>
+  <link rel="stylesheet" href="style.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+
+<h2>🎥 WebRTC Online Class</h2>
+
+<div class="video-container">
+  <div class="local-videos">
+    <video id="local" autoplay muted playsinline></video>
+    <video id="localScreen" autoplay muted playsinline style="display: none;"></video>
+  </div>
+  <div id="remotes"></div>
+</div>
+
+<div class="controls">
+  <input id="roomId" type="text" placeholder="Enter Room ID" value="demo"/>
+  <button onclick="joinRoom()">🚀 Join Room</button>
+  <button onclick="shareScreen()">🖥️ Share Screen</button>
+</div>
+
+<div class="chat-section">
+  <h3>💬 Chat</h3>
+  <div class="chat-input-container">
+    <input id="chatInput" type="text" placeholder="Type a message..."/>
+    <button onclick="sendChat()">Send</button>
+  </div>
+  <ul id="chatBox"></ul>
+</div>
+<div class="chat-section">
+  <h3>💬 Chat</h3>
+  <div class="chat-input-container">
+    <button onclick="stopShare()">Stop Sharing</button>
+  </div>
+  <ul id="chatBox"></ul>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

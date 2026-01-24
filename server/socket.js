@@ -1,15 +1,49 @@
-const { joinRoom, leaveRoom, rooms } = require("./rooms");
+const { createRoom, checkRoom, joinRoom, leaveRoom, getRoomUsers, rooms } = require("./rooms");
 
 module.exports = (io) => {
   io.on("connection", (socket) => {
 
-    socket.on("join-room", ({ roomId }) => {
-      socket.join(roomId);
+    socket.on("create-room", ({ roomId, password }) => {
+      const result = createRoom(roomId, password);
+      if (result.success) {
+        socket.emit("room-created", { roomId, hasPassword: result.hasPassword });
+      } else {
+        socket.emit("create-room-error", { error: result.error });
+      }
+    });
 
-      const users = joinRoom(roomId, socket.id);
+    socket.on("check-room", ({ roomId }) => {
+      const result = checkRoom(roomId);
+      if (!result.exists) {
+        socket.emit("join-result", { success: false, error: 'Room does not exist' });
+      } else if (result.hasPassword) {
+        socket.emit("join-result", { success: false, requiresPassword: true });
+      } else {
+        // Room exists and no password required, auto join
+        socket.emit("join-result", { success: true, requiresPassword: false });
+      }
+    });
 
-      socket.emit("room-users", users.filter(id => id !== socket.id));
-      socket.to(roomId).emit("user-joined", socket.id);
+    socket.on("join-room", ({ roomId, password }) => {
+      // If room doesn't exist, create it (for backward compatibility)
+      if (!rooms[roomId]) {
+        createRoom(roomId, password);
+      }
+      
+      const result = joinRoom(roomId, socket.id, password);
+      
+      if (result.success) {
+        socket.join(roomId);
+        socket.emit("join-result", { success: true });
+        socket.emit("room-users", result.users.filter(id => id !== socket.id));
+        socket.to(roomId).emit("user-joined", socket.id);
+      } else {
+        socket.emit("join-result", { 
+          success: false, 
+          error: result.error,
+          requiresPassword: result.requiresPassword 
+        });
+      }
     });
 
     socket.on("offer", ({ to, offer }) => {

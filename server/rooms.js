@@ -5,7 +5,7 @@ function createRoom(roomId, password = null) {
     return { success: false, error: 'Room already exists' };
   }
   rooms[roomId] = {
-    users: new Set(),
+    users: new Map(), // Map<socketId, { id, displayName }>
     password: password || null,
     hasPassword: !!password
   };
@@ -23,7 +23,7 @@ function checkRoom(roomId) {
   };
 }
 
-function joinRoom(roomId, socketId, password = null) {
+function joinRoom(roomId, socketId, password = null, displayName = null) {
   if (!rooms[roomId]) {
     return { success: false, error: 'Room does not exist' };
   }
@@ -38,8 +38,15 @@ function joinRoom(roomId, socketId, password = null) {
     };
   }
   
-  room.users.add(socketId);
-  return { success: true, users: [...room.users] };
+  // Store user with displayName
+  const userDisplayName = displayName || `User-${socketId.slice(0, 6)}`;
+  room.users.set(socketId, { id: socketId, displayName: userDisplayName });
+  
+  return { 
+    success: true, 
+    users: [...room.users.values()],
+    currentUser: { id: socketId, displayName: userDisplayName }
+  };
 }
 
 function leaveRoom(roomId, socketId) {
@@ -52,12 +59,17 @@ function leaveRoom(roomId, socketId) {
     return [];
   }
   
-  return [...rooms[roomId].users];
+  return [...rooms[roomId].users.values()];
 }
 
 function getRoomUsers(roomId) {
   if (!rooms[roomId]) return [];
-  return [...rooms[roomId].users];
+  return [...rooms[roomId].users.values()];
 }
 
-module.exports = { rooms, createRoom, checkRoom, joinRoom, leaveRoom, getRoomUsers };
+function getUser(roomId, socketId) {
+  if (!rooms[roomId]) return null;
+  return rooms[roomId].users.get(socketId) || null;
+}
+
+module.exports = { rooms, createRoom, checkRoom, joinRoom, leaveRoom, getRoomUsers, getUser };

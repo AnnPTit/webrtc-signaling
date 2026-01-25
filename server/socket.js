@@ -1,4 +1,4 @@
-const { createRoom, checkRoom, joinRoom, leaveRoom, getRoomUsers, rooms } = require("./rooms");
+const { createRoom, checkRoom, joinRoom, leaveRoom, getRoomUsers, getUser, rooms } = require("./rooms");
 
 module.exports = (io) => {
   io.on("connection", (socket) => {
@@ -24,19 +24,21 @@ module.exports = (io) => {
       }
     });
 
-    socket.on("join-room", ({ roomId, password }) => {
+    socket.on("join-room", ({ roomId, password, displayName }) => {
       // If room doesn't exist, create it (for backward compatibility)
       if (!rooms[roomId]) {
         createRoom(roomId, password);
       }
       
-      const result = joinRoom(roomId, socket.id, password);
+      const result = joinRoom(roomId, socket.id, password, displayName);
       
       if (result.success) {
         socket.join(roomId);
         socket.emit("join-result", { success: true });
-        socket.emit("room-users", result.users.filter(id => id !== socket.id));
-        socket.to(roomId).emit("user-joined", socket.id);
+        // Send list of other users (excluding current user)
+        socket.emit("room-users", result.users.filter(user => user.id !== socket.id));
+        // Notify other users with new user's info including displayName
+        socket.to(roomId).emit("user-joined", result.currentUser);
       } else {
         socket.emit("join-result", { 
           success: false, 
@@ -59,8 +61,11 @@ module.exports = (io) => {
     });
 
     socket.on("chat", ({ roomId, message }) => {
+      // Get user info to include displayName in chat message
+      const user = getUser(roomId, socket.id);
       io.to(roomId).emit("chat", {
         from: socket.id,
+        fromName: user ? user.displayName : null,
         message,
         time: new Date()
       });

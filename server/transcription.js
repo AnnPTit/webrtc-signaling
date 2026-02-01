@@ -10,6 +10,7 @@ const client = new AssemblyAI({
 const CONNECTION_PARAMS = {
   sampleRate: 16000,
   formatTurns: true,
+  languageCode: 'vi', // Vietnamese
 };
 
 // Store active transcription sessions per user

@@ -1,50 +1,91 @@
-const { createRoom, checkRoom, joinRoom, leaveRoom, getRoomUsers, getUser, rooms } = require("./rooms");
+const { createRoom, checkRoom, joinRoom, leaveRoom, getRoomUsers, getUser, getUserSession, roomExists, saveChatMessage, getChatHistory } = require("./rooms");
 
 module.exports = (io) => {
   io.on("connection", (socket) => {
+    // Store roomId in socket for backup (in case Redis data is lost)
+    socket.currentRoomId = null;
+    socket.displayName = null;
 
-    socket.on("create-room", ({ roomId, password }) => {
-      const result = createRoom(roomId, password);
-      if (result.success) {
-        socket.emit("room-created", { roomId, hasPassword: result.hasPassword });
-      } else {
-        socket.emit("create-room-error", { error: result.error });
+    socket.on("create-room", async ({ roomId, password }) => {
+      try {
+        const result = await createRoom(roomId, password);
+        if (result.success) {
+          socket.emit("room-created", { 
+            roomId, 
+            hasPassword: result.hasPassword,
+            startTime: result.startTime 
+          });
+        } else {
+          socket.emit("create-room-error", { error: result.error });
+        }
+      } catch (error) {
+        console.error("Error creating room:", error);
+        socket.emit("create-room-error", { error: "Failed to create room" });
       }
     });
 
-    socket.on("check-room", ({ roomId }) => {
-      const result = checkRoom(roomId);
-      if (!result.exists) {
-        socket.emit("join-result", { success: false, error: 'Room does not exist' });
-      } else if (result.hasPassword) {
-        socket.emit("join-result", { success: false, requiresPassword: true });
-      } else {
-        // Room exists and no password required, auto join
-        socket.emit("join-result", { success: true, requiresPassword: false });
+    socket.on("check-room", async ({ roomId }) => {
+      try {
+        const result = await checkRoom(roomId);
+        if (!result.exists) {
+          socket.emit("join-result", { success: false, error: 'Room does not exist' });
+        } else if (result.hasPassword) {
+          socket.emit("join-result", { success: false, requiresPassword: true });
+        } else {
+          // Room exists and no password required, auto join
+          socket.emit("join-result", { success: true, requiresPassword: false });
+        }
+      } catch (error) {
+        console.error("Error checking room:", error);
+        socket.emit("join-result", { success: false, error: "Failed to check room" });
       }
     });
 
-    socket.on("join-room", ({ roomId, password, displayName }) => {
-      // If room doesn't exist, create it (for backward compatibility)
-      if (!rooms[roomId]) {
-        createRoom(roomId, password);
-      }
-      
-      const result = joinRoom(roomId, socket.id, password, displayName);
-      
-      if (result.success) {
-        socket.join(roomId);
-        socket.emit("join-result", { success: true });
-        // Send list of other users (excluding current user)
-        socket.emit("room-users", result.users.filter(user => user.id !== socket.id));
-        // Notify other users with new user's info including displayName
-        socket.to(roomId).emit("user-joined", result.currentUser);
-      } else {
-        socket.emit("join-result", { 
-          success: false, 
-          error: result.error,
-          requiresPassword: result.requiresPassword 
-        });
+    socket.on("join-room", async ({ roomId, password, displayName }) => {
+      try {
+        // If room doesn't exist, create it (for backward compatibility)
+        const exists = await roomExists(roomId);
+        if (!exists) {
+          await createRoom(roomId, password);
+        }
+        
+        const result = await joinRoom(roomId, socket.id, password, displayName);
+        
+        if (result.success) {
+          socket.join(roomId);
+          
+          // Store in socket for backup
+          socket.currentRoomId = roomId;
+          socket.displayName = result.currentUser.displayName;
+          
+          // Get chat history for the room
+          const chatHistory = await getChatHistory(roomId);
+          
+          socket.emit("join-result", { 
+            success: true,
+            startTime: result.startTime 
+          });
+          
+          // Send list of other users (excluding current user)
+          socket.emit("room-users", result.users.filter(user => user.id !== socket.id));
+          
+          // Send chat history
+          if (chatHistory.length > 0) {
+            socket.emit("chat-history", chatHistory);
+          }
+          
+          // Notify other users with new user's info including displayName
+          socket.to(roomId).emit("user-joined", result.currentUser);
+        } else {
+          socket.emit("join-result", { 
+            success: false, 
+            error: result.error,
+            requiresPassword: result.requiresPassword 
+          });
+        }
+      } catch (error) {
+        console.error("Error joining room:", error);
+        socket.emit("join-result", { success: false, error: "Failed to join room" });
       }
     });
 
@@ -60,21 +101,80 @@ module.exports = (io) => {
       socket.to(to).emit("ice-candidate", { from: socket.id, candidate });
     });
 
-    socket.on("chat", ({ roomId, message }) => {
-      // Get user info to include displayName in chat message
-      const user = getUser(roomId, socket.id);
-      io.to(roomId).emit("chat", {
-        from: socket.id,
-        fromName: user ? user.displayName : null,
-        message,
-        time: new Date()
-      });
+    socket.on("chat", async ({ roomId, message }) => {
+      try {
+        // Get user info to include displayName in chat message
+        const user = await getUser(roomId, socket.id);
+        const chatMessage = {
+          from: socket.id,
+          fromName: user ? user.displayName : null,
+          message,
+          time: new Date().toISOString()
+        };
+        
+        // Save to Redis
+        await saveChatMessage(roomId, chatMessage);
+        
+        io.to(roomId).emit("chat", chatMessage);
+      } catch (error) {
+        console.error("Error sending chat:", error);
+      }
     });
 
-    socket.on("disconnect", () => {
-      for (const roomId in rooms) {
-        leaveRoom(roomId, socket.id);
-        socket.to(roomId).emit("user-left", socket.id);
+    socket.on("reaction", async ({ roomId, emoji }) => {
+      try {
+        const user = await getUser(roomId, socket.id);
+        const fromName = user?.displayName || socket.id.slice(0, 8);
+        
+        // Broadcast reaction to all users in room
+        io.to(roomId).emit("reaction", {
+          from: socket.id,
+          fromName: fromName,
+          emoji: emoji
+        });
+      } catch (error) {
+        console.error("Error sending reaction:", error);
+      }
+    });
+
+    socket.on("leave-room", async ({ roomId }) => {
+      try {
+        await leaveRoom(roomId, socket.id);
+        socket.leave(roomId);
+        socket.currentRoomId = null;
+        socket.displayName = null;
+        // Broadcast to all remaining users in room
+        io.to(roomId).emit("user-left", socket.id);
+      } catch (error) {
+        console.error("Error leaving room:", error);
+      }
+    });
+
+    socket.on("disconnect", async () => {
+      try {
+        // Try to get roomId from Redis first, fallback to socket backup
+        let roomId = null;
+        
+        const userSession = await getUserSession(socket.id);
+        if (userSession && userSession.roomId) {
+          roomId = userSession.roomId;
+        } else if (socket.currentRoomId) {
+          // Fallback to socket-stored roomId (Redis data might be lost)
+          roomId = socket.currentRoomId;
+          console.log(`⚠️ Using socket backup for roomId: ${roomId}`);
+        }
+        
+        if (roomId) {
+          await leaveRoom(roomId, socket.id);
+          // Use io.to() instead of socket.to() because socket has already left all rooms on disconnect
+          io.to(roomId).emit("user-left", socket.id);
+        }
+      } catch (error) {
+        console.error("Error handling disconnect:", error);
+        // Final fallback: use socket backup even if leaveRoom fails
+        if (socket.currentRoomId) {
+          io.to(socket.currentRoomId).emit("user-left", socket.id);
+        }
       }
     });
   });

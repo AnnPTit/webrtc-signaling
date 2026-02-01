@@ -1,4 +1,5 @@
 const { createRoom, checkRoom, joinRoom, leaveRoom, getRoomUsers, getUser, getUserSession, roomExists, saveChatMessage, getChatHistory } = require("./rooms");
+const { startTranscription, sendAudioData, stopTranscription, hasActiveSession } = require("./transcription");
 
 module.exports = (io) => {
   io.on("connection", (socket) => {
@@ -152,6 +153,11 @@ module.exports = (io) => {
 
     socket.on("disconnect", async () => {
       try {
+        // Stop any active transcription session
+        if (hasActiveSession(socket.id)) {
+          await stopTranscription(socket.id);
+        }
+        
         // Try to get roomId from Redis first, fallback to socket backup
         let roomId = null;
         
@@ -175,6 +181,68 @@ module.exports = (io) => {
         if (socket.currentRoomId) {
           io.to(socket.currentRoomId).emit("user-left", socket.id);
         }
+      }
+    });
+
+    // =====================
+    // TRANSCRIPTION EVENTS
+    // =====================
+
+    socket.on("start-transcription", async ({ roomId }) => {
+      try {
+        const displayName = socket.displayName || `User-${socket.id.slice(0, 6)}`;
+        
+        const result = await startTranscription(socket.id, roomId, displayName, (transcript) => {
+          // Broadcast transcript to all users in the room
+          io.to(roomId).emit("subtitle", {
+            type: transcript.type,
+            text: transcript.text,
+            from: transcript.socketId,
+            fromName: transcript.displayName,
+            timestamp: transcript.timestamp,
+          });
+        });
+
+        if (result.success) {
+          socket.emit("transcription-started", { success: true });
+          // Notify room that user enabled captions
+          socket.to(roomId).emit("user-transcription-status", {
+            userId: socket.id,
+            displayName,
+            enabled: true,
+          });
+        } else {
+          socket.emit("transcription-started", { success: false, error: result.error });
+        }
+      } catch (error) {
+        console.error("Error starting transcription:", error);
+        socket.emit("transcription-started", { success: false, error: "Failed to start transcription" });
+      }
+    });
+
+    socket.on("audio-data", ({ audioData }) => {
+      try {
+        if (hasActiveSession(socket.id)) {
+          sendAudioData(socket.id, audioData);
+        }
+      } catch (error) {
+        console.error("Error processing audio data:", error);
+      }
+    });
+
+    socket.on("stop-transcription", async ({ roomId }) => {
+      try {
+        await stopTranscription(socket.id);
+        socket.emit("transcription-stopped", { success: true });
+        // Notify room that user disabled captions
+        socket.to(roomId).emit("user-transcription-status", {
+          userId: socket.id,
+          displayName: socket.displayName || `User-${socket.id.slice(0, 6)}`,
+          enabled: false,
+        });
+      } catch (error) {
+        console.error("Error stopping transcription:", error);
+        socket.emit("transcription-stopped", { success: false, error: "Failed to stop transcription" });
       }
     });
   });

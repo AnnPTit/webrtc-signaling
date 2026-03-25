@@ -50,6 +50,7 @@ redis.on('close', () => {
 
 redis.on('reconnecting', () => {
   console.log('🔄 Reconnecting to Redis...');
+  console.log('redis host:', redis.options.host);
 });
 
 // Helper to check if Redis is available

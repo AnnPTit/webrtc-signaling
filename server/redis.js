@@ -1,18 +1,29 @@
 const Redis = require('ioredis');
 
-const redis = new Redis({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: process.env.REDIS_PORT || 6379,
-  password: process.env.REDIS_PASSWORD || undefined,
+// Support REDIS_URL (Railway) or individual REDIS_HOST/PORT/PASSWORD
+const redisOptions = {
   retryStrategy: (times) => {
-    const delay = Math.min(times * 50, 2000);
+    if (times > 20) {
+      console.error('❌ Redis max retries reached, stopping reconnection');
+      return null; // Stop retrying
+    }
+    const delay = Math.min(times * 100, 3000);
     console.log(`Redis retry attempt ${times}, delay: ${delay}ms`);
     return delay;
   },
   maxRetriesPerRequest: 3,
   enableReadyCheck: true,
   lazyConnect: false,
-});
+};
+
+const redis = process.env.REDIS_URL
+  ? new Redis(process.env.REDIS_URL, redisOptions)
+  : new Redis({
+      host: process.env.REDIS_HOST || 'localhost',
+      port: process.env.REDIS_PORT || 6379,
+      password: process.env.REDIS_PASSWORD || undefined,
+      ...redisOptions,
+    });
 
 // Track Redis connection status
 let isRedisConnected = false;

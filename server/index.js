@@ -1,4 +1,6 @@
-require('dotenv').config();
+const path = require('path');
+const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env';
+require('dotenv').config({ path: path.resolve(__dirname, '..', envFile) });
 
 const express = require("express");
 const http = require("http");
@@ -27,6 +29,7 @@ app.use(express.static("public"));
 
 require("./socket")(io);
 
-server.listen(3000, () => {
-  console.log("NodeJS signaling server running at :3000");
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`NodeJS signaling server running at :${PORT}`);
 });

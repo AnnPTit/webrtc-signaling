@@ -1,5 +1,7 @@
 const { redis, KEYS, ROOM_TTL, isRedisAvailable } = require('./redis');
 
+const MAX_ROOM_MEMBERS = 5;
+
 // In-memory fallback store when Redis is unavailable
 const memoryStore = {
   rooms: new Map(),
@@ -70,6 +72,7 @@ async function checkRoom(roomId) {
       exists: true,
       hasPassword: roomData.hasPassword === '1',
       userCount: members.size,
+      isFull: members.size >= MAX_ROOM_MEMBERS,
       startTime: parseInt(roomData.startTime, 10),
     };
   }
@@ -80,29 +83,6 @@ async function checkRoom(roomId) {
   const roomData = await redis.hgetall(roomKey);
   
   if (!roomData || Object.keys(roomData).length === 0) {
-    // Check if members still exist (room data was deleted but members remain)
-    const memberCount = await redis.hlen(membersKey);
-    if (memberCount > 0) {
-      // Auto-recover: recreate room data
-      console.log(`🔄 Auto-recovering room ${roomId} (members exist but room data missing)`);
-      const startTime = Date.now();
-      await redis.hset(roomKey, {
-        password: '',
-        hasPassword: '0',
-        startTime: startTime.toString(),
-        createdAt: new Date().toISOString(),
-        recovered: 'true',
-      });
-      await redis.expire(roomKey, ROOM_TTL);
-      await redis.sadd(KEYS.activeRooms, roomId);
-      
-      return {
-        exists: true,
-        hasPassword: false,
-        userCount: memberCount,
-        startTime,
-      };
-    }
     return { exists: false };
   }
   
@@ -112,6 +92,7 @@ async function checkRoom(roomId) {
     exists: true,
     hasPassword: roomData.hasPassword === '1',
     userCount,
+    isFull: userCount >= MAX_ROOM_MEMBERS,
     startTime: parseInt(roomData.startTime, 10),
   };
 }
@@ -130,16 +111,9 @@ async function joinRoom(roomId, socketId, password = null, displayName = null) {
 
   if (!isRedisAvailable()) {
     // Fallback to memory
-    let roomData = memoryStore.rooms.get(roomId);
+    const roomData = memoryStore.rooms.get(roomId);
     if (!roomData) {
-      // Auto-create room in memory
-      roomData = {
-        password: password || '',
-        hasPassword: password ? '1' : '0',
-        startTime: Date.now().toString(),
-        createdAt: new Date().toISOString(),
-      };
-      memoryStore.rooms.set(roomId, roomData);
+      return { success: false, error: 'Room does not exist' };
     }
 
     if (roomData.hasPassword === '1' && roomData.password !== password) {
@@ -151,6 +125,11 @@ async function joinRoom(roomId, socketId, password = null, displayName = null) {
       members = new Map();
       memoryStore.members.set(roomId, members);
     }
+
+    if (!members.has(socketId) && members.size >= MAX_ROOM_MEMBERS) {
+      return { success: false, error: 'Phòng đã đủ 5 người' };
+    }
+
     members.set(socketId, currentUser);
 
     memoryStore.users.set(socketId, { roomId, displayName: userDisplayName, joinedAt: new Date().toISOString() });
@@ -168,28 +147,8 @@ async function joinRoom(roomId, socketId, password = null, displayName = null) {
   const membersKey = KEYS.roomMembers(roomId);
   
   let roomData = await redis.hgetall(roomKey);
-  
-  // Auto-recovery: if room doesn't exist but we're trying to join, create it
   if (!roomData || Object.keys(roomData).length === 0) {
-    // Check if there are existing members (orphaned room)
-    const existingMemberCount = await redis.hlen(membersKey);
-    if (existingMemberCount > 0) {
-      // Recover room with no password
-      console.log(`🔄 Auto-recovering room ${roomId} during join`);
-      const startTime = Date.now();
-      roomData = {
-        password: '',
-        hasPassword: '0',
-        startTime: startTime.toString(),
-        createdAt: new Date().toISOString(),
-        recovered: 'true',
-      };
-      await redis.hset(roomKey, roomData);
-      await redis.expire(roomKey, ROOM_TTL);
-      await redis.sadd(KEYS.activeRooms, roomId);
-    } else {
-      return { success: false, error: 'Room does not exist' };
-    }
+    return { success: false, error: 'Room does not exist' };
   }
   
   // Check password
@@ -200,11 +159,33 @@ async function joinRoom(roomId, socketId, password = null, displayName = null) {
       requiresPassword: true 
     };
   }
-  
+
   const userData = JSON.stringify(currentUser);
+  const joinAllowed = await redis.eval(
+    `
+      if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then
+        redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+        return 1
+      end
+
+      if redis.call('HLEN', KEYS[1]) >= tonumber(ARGV[3]) then
+        return 0
+      end
+
+      redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+      return 1
+    `,
+    1,
+    membersKey,
+    socketId,
+    userData,
+    MAX_ROOM_MEMBERS.toString()
+  );
+
+  if (Number(joinAllowed) !== 1) {
+    return { success: false, error: 'Phòng đã đủ 5 người' };
+  }
   
-  // Add user to room members
-  await redis.hset(membersKey, socketId, userData);
   await redis.expire(membersKey, ROOM_TTL);
   
   // Store user session

@@ -30,6 +30,8 @@ module.exports = (io) => {
         const result = await checkRoom(roomId);
         if (!result.exists) {
           socket.emit("join-result", { success: false, error: 'Room does not exist' });
+        } else if (result.isFull) {
+          socket.emit("join-result", { success: false, error: 'Phòng đã đủ 5 người' });
         } else if (result.hasPassword) {
           socket.emit("join-result", { success: false, requiresPassword: true });
         } else {
@@ -44,10 +46,10 @@ module.exports = (io) => {
 
     socket.on("join-room", async ({ roomId, password, displayName }) => {
       try {
-        // If room doesn't exist, create it (for backward compatibility)
         const exists = await roomExists(roomId);
         if (!exists) {
-          await createRoom(roomId, password);
+          socket.emit("join-result", { success: false, error: "Room does not exist" });
+          return;
         }
         
         const result = await joinRoom(roomId, socket.id, password, displayName);
